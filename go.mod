@@ -18,3 +18,7 @@ require (
 	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa
 	golang.org/x/sys v0.0.0-20200625212154-ddb9806d33ae // indirect
 )
+
+replace (
+	github.com/Mrs4s/MiraiGo v0.0.0-20200812011522-ee1117893fad => ..\MiraiGo
+)
