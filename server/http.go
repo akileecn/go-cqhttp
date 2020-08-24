@@ -4,11 +4,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/hex"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Mrs4s/go-cqhttp/coolq"
+	"github.com/Mrs4s/go-cqhttp/global"
 	"github.com/gin-gonic/gin"
 	"github.com/guonaihong/gout"
 	log "github.com/sirupsen/logrus"
@@ -39,7 +41,7 @@ func (s *httpServer) Run(addr, authToken string, bot *coolq.CQBot) {
 			c.Status(404)
 			return
 		}
-		if c.Request.Method == "POST" && c.Request.Header.Get("Content-Type") == "application/json" {
+		if c.Request.Method == "POST" && strings.Contains(c.Request.Header.Get("Content-Type"), "application/json") {
 			d, err := c.GetRawData()
 			if err != nil {
 				log.Warnf("获取请求 %v 的Body时出现错误: %v", c.Request.RequestURI, err)
@@ -133,12 +135,12 @@ func (s *httpServer) Run(addr, authToken string, bot *coolq.CQBot) {
 	s.engine.Any("/set_group_leave_async", s.SetGroupLeave)
 
 	s.engine.Any("/get_image", s.GetImage)
-	s.engine.Any("/get_image_async", s.GetImage)
 
 	s.engine.Any("/get_forward_msg", s.GetForwardMessage)
 
 	s.engine.Any("/get_group_msg", s.GetGroupMessage)
-	s.engine.Any("/get_group_msg_async", s.GetGroupMessage)
+
+	s.engine.Any("/get_group_honor_info", s.GetGroupHonorInfo)
 
 	s.engine.Any("/can_send_image", s.CanSendImage)
 	s.engine.Any("/can_send_image_async", s.CanSendImage)
@@ -156,7 +158,13 @@ func (s *httpServer) Run(addr, authToken string, bot *coolq.CQBot) {
 
 	go func() {
 		log.Infof("CQ HTTP 服务器已启动: %v", addr)
-		log.Fatal(s.engine.Run(addr))
+		err := s.engine.Run(addr)
+		if err != nil {
+			log.Error(err)
+			log.Infof("请检查端口是否被占用.")
+			time.Sleep(time.Second * 5)
+			os.Exit(1)
+		}
 	}()
 }
 
@@ -208,7 +216,8 @@ func (s *httpServer) GetFriendList(c *gin.Context) {
 }
 
 func (s *httpServer) GetGroupList(c *gin.Context) {
-	c.JSON(200, s.bot.CQGetGroupList())
+	nc := getParamOrDefault(c, "no_cache", "false")
+	c.JSON(200, s.bot.CQGetGroupList(nc == "true"))
 }
 
 func (s *httpServer) GetGroupInfo(c *gin.Context) {
@@ -249,21 +258,23 @@ func (s *httpServer) SendMessage(c *gin.Context) {
 func (s *httpServer) SendPrivateMessage(c *gin.Context) {
 	uid, _ := strconv.ParseInt(getParam(c, "user_id"), 10, 64)
 	msg, t := getParamWithType(c, "message")
+	autoEscape := global.EnsureBool(getParam(c, "auto_escape"), false)
 	if t == gjson.JSON {
-		c.JSON(200, s.bot.CQSendPrivateMessage(uid, gjson.Parse(msg)))
+		c.JSON(200, s.bot.CQSendPrivateMessage(uid, gjson.Parse(msg), autoEscape))
 		return
 	}
-	c.JSON(200, s.bot.CQSendPrivateMessage(uid, msg))
+	c.JSON(200, s.bot.CQSendPrivateMessage(uid, msg, autoEscape))
 }
 
 func (s *httpServer) SendGroupMessage(c *gin.Context) {
 	gid, _ := strconv.ParseInt(getParam(c, "group_id"), 10, 64)
 	msg, t := getParamWithType(c, "message")
+	autoEscape := global.EnsureBool(getParam(c, "auto_escape"), false)
 	if t == gjson.JSON {
-		c.JSON(200, s.bot.CQSendGroupMessage(gid, gjson.Parse(msg)))
+		c.JSON(200, s.bot.CQSendGroupMessage(gid, gjson.Parse(msg), autoEscape))
 		return
 	}
-	c.JSON(200, s.bot.CQSendGroupMessage(gid, msg))
+	c.JSON(200, s.bot.CQSendGroupMessage(gid, msg, autoEscape))
 }
 
 func (s *httpServer) SendGroupForwardMessage(c *gin.Context) {
@@ -282,6 +293,11 @@ func (s *httpServer) GetGroupMessage(c *gin.Context) {
 	c.JSON(200, s.bot.CQGetGroupMessage(int32(mid)))
 }
 
+func (s *httpServer) GetGroupHonorInfo(c *gin.Context) {
+	gid, _ := strconv.ParseInt(getParam(c, "group_id"), 10, 64)
+	c.JSON(200, s.bot.CQGetGroupHonorInfo(gid, getParam(c, "type")))
+}
+
 func (s *httpServer) ProcessFriendRequest(c *gin.Context) {
 	flag := getParam(c, "flag")
 	approve := getParamOrDefault(c, "approve", "true")
@@ -295,7 +311,7 @@ func (s *httpServer) ProcessGroupRequest(c *gin.Context) {
 		subType = getParam(c, "type")
 	}
 	approve := getParamOrDefault(c, "approve", "true")
-	c.JSON(200, s.bot.CQProcessGroupRequest(flag, subType, approve == "true"))
+	c.JSON(200, s.bot.CQProcessGroupRequest(flag, subType, getParam(c, "reason"), approve == "true"))
 }
 
 func (s *httpServer) SetGroupCard(c *gin.Context) {
@@ -395,12 +411,12 @@ func getParamWithType(c *gin.Context, k string) (string, gjson.Type) {
 	}
 	if c.Request.Method == "POST" {
 		if h := c.Request.Header.Get("Content-Type"); h != "" {
-			if h == "application/x-www-form-urlencoded" {
+			if strings.Contains(h, "application/x-www-form-urlencoded") {
 				if p, ok := c.GetPostForm(k); ok {
 					return p, gjson.Null
 				}
 			}
-			if h == "application/json" {
+			if strings.Contains(h, "application/json") {
 				if obj, ok := c.Get("json_body"); ok {
 					res := obj.(gjson.Result).Get(k)
 					if res.Exists() {

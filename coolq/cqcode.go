@@ -1,6 +1,7 @@
 package coolq
 
 import (
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -75,6 +76,18 @@ func ToArrayMessage(e []message.IMessageElement, code int64, raw ...bool) (r []M
 					"data": map[string]string{"file": o.Name, "url": o.Url},
 				}
 			}
+		case *message.ShortVideoElement:
+			if ur {
+				m = MSG{
+					"type": "video",
+					"data": map[string]string{"file": o.Name},
+				}
+			} else {
+				m = MSG{
+					"type": "video",
+					"data": map[string]string{"file": o.Name, "url": o.Url},
+				}
+			}
 		case *message.ImageElement:
 			if ur {
 				m = MSG{
@@ -98,6 +111,15 @@ func ToStringMessage(e []message.IMessageElement, code int64, raw ...bool) (r st
 	if len(raw) != 0 {
 		ur = raw[0]
 	}
+	// 方便
+	m := &message.SendingMessage{Elements: e}
+	reply := m.FirstOrNil(func(e message.IMessageElement) bool {
+		_, ok := e.(*message.ReplyElement)
+		return ok
+	})
+	if reply != nil {
+		r += fmt.Sprintf("[CQ:reply,id=%d]", ToGlobalId(code, reply.(*message.ReplyElement).ReplySeq))
+	}
 	for _, elem := range e {
 		switch o := elem.(type) {
 		case *message.TextElement:
@@ -108,8 +130,6 @@ func ToStringMessage(e []message.IMessageElement, code int64, raw ...bool) (r st
 				continue
 			}
 			r += fmt.Sprintf("[CQ:at,qq=%d]", o.Target)
-		case *message.ReplyElement:
-			r += fmt.Sprintf("[CQ:reply,id=%d]", ToGlobalId(code, o.ReplySeq))
 		case *message.ForwardElement:
 			r += fmt.Sprintf("[CQ:forward,id=%s]", o.ResId)
 		case *message.FaceElement:
@@ -119,6 +139,12 @@ func ToStringMessage(e []message.IMessageElement, code int64, raw ...bool) (r st
 				r += fmt.Sprintf(`[CQ:record,file=%s]`, o.Name)
 			} else {
 				r += fmt.Sprintf(`[CQ:record,file=%s,url=%s]`, o.Name, CQCodeEscapeValue(o.Url))
+			}
+		case *message.ShortVideoElement:
+			if ur {
+				r += fmt.Sprintf(`[CQ:video,file=%s]`, o.Name)
+			} else {
+				r += fmt.Sprintf(`[CQ:video,file=%s,url=%s]`, o.Name, CQCodeEscapeValue(o.Url))
 			}
 		case *message.ImageElement:
 			if ur {
@@ -243,10 +269,23 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 	case "image":
 		f := d["file"]
 		if strings.HasPrefix(f, "http") || strings.HasPrefix(f, "https") {
+			cache := d["cache"]
+			if cache == "" {
+				cache = "1"
+			}
+			hash := md5.Sum([]byte(f))
+			cacheFile := path.Join(global.CACHE_PATH, hex.EncodeToString(hash[:])+".cache")
+			if global.PathExists(cacheFile) && cache == "1" {
+				b, err := ioutil.ReadFile(cacheFile)
+				if err == nil {
+					return message.NewImage(b), nil
+				}
+			}
 			b, err := global.GetBytes(f)
 			if err != nil {
 				return nil, err
 			}
+			_ = ioutil.WriteFile(cacheFile, b, 0644)
 			return message.NewImage(b), nil
 		}
 		if strings.HasPrefix(f, "base64") {
@@ -290,6 +329,7 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 			}
 			var size int32
 			var hash []byte
+			var url string
 			if path.Ext(rawPath) == ".cqimg" {
 				for _, line := range strings.Split(global.ReadAllText(rawPath), "\n") {
 					kv := strings.SplitN(line, "=", 2)
@@ -305,8 +345,13 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 				r := binary.NewReader(b)
 				hash = r.ReadBytes(16)
 				size = r.ReadInt32()
+				r.ReadString()
+				url = r.ReadString()
 			}
 			if size == 0 {
+				if url != "" {
+					return bot.ToElement(t, map[string]string{"file": url}, group)
+				}
 				return nil, errors.New("img size is 0")
 			}
 			if len(hash) != 16 {
@@ -367,7 +412,7 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 			}
 			data = b
 		}
-		if !global.IsAMR(data) {
+		if !global.IsAMRorSILK(data) {
 			return nil, errors.New("unsupported voice file format (please use AMR file for now)")
 		}
 		return &message.VoiceElement{Data: data}, nil
@@ -386,6 +431,38 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 		return message.NewAt(t), nil
 	case "share":
 		return message.NewUrlShare(d["url"], d["title"], d["content"], d["image"]), nil
+	case "music":
+		if d["type"] == "qq" {
+			info, err := global.QQMusicSongInfo(d["id"])
+			if err != nil {
+				return nil, err
+			}
+			if !info.Get("track_info").Exists() {
+				return nil, errors.New("song not found")
+			}
+			aid := strconv.FormatInt(info.Get("track_info.album.id").Int(), 10)
+			name := info.Get("track_info.name").Str
+			if len(aid) < 2 {
+				return nil, errors.New("song error")
+			}
+			xml := fmt.Sprintf(`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><msg serviceID="2" templateID="1" action="web" brief="[分享] %s" sourceMsgId="0" url="https://i.y.qq.com/v8/playsong.html?_wv=1&songid=%s&souce=qqshare&source=qqshare&ADTAG=qqshare" flag="0" adverSign="0" multiMsgFlag="0"><item layout="2"><audio cover="http://imgcache.qq.com/music/photo/album_500/%s/500_albumpic_%s_0.jpg" src="%s" /><title>%s</title><summary>%s</summary></item><source name="QQ音乐" icon="https://i.gtimg.cn/open/app_icon/01/07/98/56/1101079856_100_m.png" url="http://web.p.qq.com/qqmpmobile/aio/app.html?id=1101079856" action="app" a_actionData="com.tencent.qqmusic" i_actionData="tencent1101079856://" appid="1101079856" /></msg>`,
+				name, d["id"], aid[:len(aid)-2], aid, name, "", info.Get("track_info.singer.name").Str)
+			return &message.ServiceElement{
+				Id:      60,
+				Content: xml,
+				SubType: "music",
+			}, nil
+		}
+		if d["type"] == "custom" {
+			xml := fmt.Sprintf(`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><msg serviceID="2" templateID="1" action="web" brief="[分享] %s" sourceMsgId="0" url="%s" flag="0" adverSign="0" multiMsgFlag="0"><item layout="2"><audio cover="%s" src="%s"/><title>%s</title><summary>%s</summary></item><source name="音乐" icon="https://i.gtimg.cn/open/app_icon/01/07/98/56/1101079856_100_m.png" url="http://web.p.qq.com/qqmpmobile/aio/app.html?id=1101079856" action="app" a_actionData="com.tencent.qqmusic" i_actionData="tencent1101079856://" appid="1101079856" /></msg>`,
+				d["title"], d["url"], d["image"], d["audio"], d["title"], d["content"])
+			return &message.ServiceElement{
+				Id:      60,
+				Content: xml,
+				SubType: "music",
+			}, nil
+		}
+		return nil, errors.New("unsupported music type: " + d["type"])
 	default:
 		return nil, errors.New("unsupported cq code: " + t)
 	}

@@ -63,6 +63,19 @@ func NewQQBot(cli *client.QQClient, conf *global.JsonConfig) *CQBot {
 	bot.Client.OnNewFriendAdded(bot.friendAddedEvent)
 	bot.Client.OnGroupInvited(bot.groupInvitedEvent)
 	bot.Client.OnUserWantJoinGroup(bot.groupJoinReqEvent)
+	go func() {
+		for {
+			time.Sleep(time.Second * 5)
+			bot.dispatchEventMessage(MSG{
+				"time":            time.Now().Unix(),
+				"self_id":         bot.Client.Uin,
+				"post_type":       "meta_event",
+				"meta_event_type": "heartbeat",
+				"status":          nil,
+				"interval":        5000,
+			})
+		}
+	}()
 	return bot
 }
 
@@ -85,7 +98,7 @@ func (bot *CQBot) GetGroupMessage(mid int32) MSG {
 		if err == nil {
 			return m
 		}
-		log.Warnf("获取信息时出现错误: %v", err)
+		log.Warnf("获取信息时出现错误: %v id: %v", err, mid)
 	}
 	return nil
 }
@@ -115,6 +128,10 @@ func (bot *CQBot) SendGroupMessage(groupId int64, m *message.SendingMessage) int
 	}
 	m.Elements = newElem
 	ret := bot.Client.SendGroupMessage(groupId, m)
+	if ret == nil || ret.Id == -1 {
+		log.Warnf("群消息发送失败: 账号可能被风控.")
+		return -1
+	}
 	return bot.InsertGroupMessage(ret)
 }
 
@@ -133,15 +150,22 @@ func (bot *CQBot) SendPrivateMessage(target int64, m *message.SendingMessage) in
 		newElem = append(newElem, elem)
 	}
 	m.Elements = newElem
-	var id int32
+	var id int32 = -1
 	if bot.Client.FindFriend(target) != nil {
-		id = bot.Client.SendPrivateMessage(target, m).Id
+		msg := bot.Client.SendPrivateMessage(target, m)
+		if msg != nil {
+			id = msg.Id
+		}
 	} else {
 		if code, ok := bot.tempMsgCache.Load(target); ok {
-			id = bot.Client.SendTempMessage(code.(int64), target, m).Id
-		} else {
-			return -1
+			msg := bot.Client.SendTempMessage(code.(int64), target, m)
+			if msg != nil {
+				id = msg.Id
+			}
 		}
+	}
+	if id == -1 {
+		return -1
 	}
 	return ToGlobalId(target, id)
 }
@@ -191,7 +215,7 @@ func (bot *CQBot) dispatchEventMessage(m MSG) {
 			fn(m)
 			end := time.Now()
 			if end.Sub(start) > time.Second*5 {
-				log.Debugf("警告: 事件处理耗时超过 5 秒 (%v秒), 请检查应用是否有堵塞.", end.Sub(start)/time.Second)
+				log.Debugf("警告: 事件处理耗时超过 5 秒 (%v), 请检查应用是否有堵塞.", end.Sub(start))
 			}
 		}()
 	}
@@ -202,6 +226,9 @@ func formatGroupName(group *client.GroupInfo) string {
 }
 
 func formatMemberName(mem *client.GroupMemberInfo) string {
+	if mem == nil {
+		return "未知"
+	}
 	return fmt.Sprintf("%s(%d)", mem.DisplayName(), mem.Uin)
 }
 
