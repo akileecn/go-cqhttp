@@ -3,3 +3,4 @@ vendor/
 /config.json
 /device.json
 /logs/
+.idea
