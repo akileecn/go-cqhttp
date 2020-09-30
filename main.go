@@ -213,6 +213,17 @@ func main() {
 	log.Info("Bot将在5秒后登录并开始信息处理, 按 Ctrl+C 取消.")
 	time.Sleep(time.Second * 5)
 	log.Info("开始尝试登录并同步消息...")
+	log.Infof("使用协议: %v", func() string {
+		switch client.SystemDeviceInfo.Protocol {
+		case client.AndroidPad:
+			return "Android Pad"
+		case client.AndroidPhone:
+			return "Android Phone"
+		case client.AndroidWatch:
+			return "Android Watch"
+		}
+		return "未知"
+	}())
 	cli := client.NewClient(conf.Uin, conf.Password)
 	cli.OnLog(func(c *client.QQClient, e *client.LogEvent) {
 		switch e.Type {
@@ -223,6 +234,9 @@ func main() {
 		case "DEBUG":
 			log.Debug("Protocol -> " + e.Message)
 		}
+	})
+	cli.OnServerUpdated(func(bot *client.QQClient, e *client.ServerUpdatedEvent) {
+		log.Infof("收到服务器地址更新通知, 将在下一次重连时应用. ")
 	})
 	rsp, err := cli.Login()
 	for {
@@ -263,6 +277,11 @@ func main() {
 	} else {
 		coolq.SetMessageFormat(conf.PostMessageFormat)
 	}
+	if conf.RateLimit.Enabled {
+		global.InitLimiter(conf.RateLimit.Frequency, conf.RateLimit.BucketSize)
+	}
+	log.Info("正在加载事件过滤器.")
+	global.BootFilter()
 	coolq.IgnoreInvalidCQCode = conf.IgnoreInvalidCQCode
 	coolq.ForceFragmented = conf.ForceFragmented
 	if conf.HttpConfig != nil && conf.HttpConfig.Enabled {
