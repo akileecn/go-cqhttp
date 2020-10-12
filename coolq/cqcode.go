@@ -30,6 +30,47 @@ type PokeElement struct {
 	Target int64
 }
 
+type GiftElement struct {
+	Target int64
+	GiftId message.GroupGift
+}
+
+type MusicElement struct {
+	Title      string
+	Summary    string
+	Url        string
+	PictureUrl string
+	MusicUrl   string
+}
+
+type QQMusicElement struct {
+	MusicElement
+}
+
+type CloudMusicElement struct {
+	MusicElement
+}
+
+func (e *GiftElement) Type() message.ElementType {
+	return message.At
+}
+
+func (e *MusicElement) Type() message.ElementType {
+	return message.Service
+}
+
+var GiftId = []message.GroupGift{
+	message.SweetWink,
+	message.HappyCola,
+	message.LuckyBracelet,
+	message.Cappuccino,
+	message.CatWatch,
+	message.FleeceGloves,
+	message.RainbowCandy,
+	message.Stronger,
+	message.LoveMicrophone,
+}
+
 func (e *PokeElement) Type() message.ElementType {
 	return message.At
 }
@@ -333,6 +374,26 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 		}
 		t, _ := strconv.ParseInt(d["qq"], 10, 64)
 		return &PokeElement{Target: t}, nil
+	case "gift":
+		if !group {
+			return nil, errors.New("private gift unsupported") // no free private gift
+		}
+		t, _ := strconv.ParseInt(d["qq"], 10, 64)
+		id, _ := strconv.Atoi(d["id"])
+		if id < 0 || id >= 9 {
+			return nil, errors.New("invalid gift id")
+		}
+		return &GiftElement{Target: t, GiftId: GiftId[id]}, nil
+	case "tts":
+		if !group {
+			return nil, errors.New("private voice unsupported now")
+		}
+		data, err := bot.Client.GetTts(d["text"])
+		ioutil.WriteFile("tts.silk", data, 777)
+		if err != nil {
+			return nil, err
+		}
+		return &message.VoiceElement{Data: data}, nil
 	case "record":
 		if !group {
 			return nil, errors.New("private voice unsupported now")
@@ -343,7 +404,10 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 			return nil, err
 		}
 		if !global.IsAMRorSILK(data) {
-			return nil, errors.New("unsupported voice file format (please use AMR file for now)")
+			data, err = global.Encoder(data)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return &message.VoiceElement{Data: data}, nil
 	case "face":
@@ -385,8 +449,16 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 			if d["content"] != "" {
 				content = d["content"]
 			}
-			json := fmt.Sprintf("{\"app\": \"com.tencent.structmsg\",\"desc\": \"音乐\",\"meta\": {\"music\": {\"desc\": \"%s\",\"jumpUrl\": \"%s\",\"musicUrl\": \"%s\",\"preview\": \"%s\",\"tag\": \"QQ音乐\",\"title\": \"%s\"}},\"prompt\": \"[分享]%s\",\"ver\": \"0.0.0.1\",\"view\": \"music\"}", content, jumpUrl, purl, preview, name, name)
-			return message.NewLightApp(json), nil
+			if purl == "" {
+				purl = "https://www.baidu.com" // fix vip song
+			}
+			return &QQMusicElement{MusicElement: MusicElement{
+				Title:      name,
+				Summary:    content,
+				Url:        jumpUrl,
+				PictureUrl: preview,
+				MusicUrl:   purl,
+			}}, nil
 		}
 		if d["type"] == "163" {
 			info, err := global.NeteaseMusicSongInfo(d["id"])
@@ -404,8 +476,13 @@ func (bot *CQBot) ToElement(t string, d map[string]string, group bool) (message.
 			if info.Get("artists.0").Exists() {
 				artistName = info.Get("artists.0.name").Str
 			}
-			json := fmt.Sprintf("{\"app\": \"com.tencent.structmsg\",\"desc\":\"音乐\",\"view\":\"music\",\"prompt\":\"[分享]%s\",\"ver\":\"0.0.0.1\",\"meta\":{ \"music\": { \"desc\": \"%s\", \"jumpUrl\": \"%s\", \"musicUrl\": \"%s\", \"preview\": \"%s\", \"tag\": \"网易云音乐\", \"title\":\"%s\"}}}", name, artistName, jumpUrl, musicUrl, picUrl, name)
-			return message.NewLightApp(json), nil
+			return &CloudMusicElement{MusicElement{
+				Title:      name,
+				Summary:    artistName,
+				Url:        jumpUrl,
+				PictureUrl: picUrl,
+				MusicUrl:   musicUrl,
+			}}, nil
 		}
 		if d["type"] == "custom" {
 			xml := fmt.Sprintf(`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><msg serviceID="2" templateID="1" action="web" brief="[分享] %s" sourceMsgId="0" url="%s" flag="0" adverSign="0" multiMsgFlag="0"><item layout="2"><audio cover="%s" src="%s"/><title>%s</title><summary>%s</summary></item><source name="音乐" icon="https://i.gtimg.cn/open/app_icon/01/07/98/56/1101079856_100_m.png" url="http://web.p.qq.com/qqmpmobile/aio/app.html?id=1101079856" action="app" a_actionData="com.tencent.qqmusic" i_actionData="tencent1101079856://" appid="1101079856" /></msg>`,
