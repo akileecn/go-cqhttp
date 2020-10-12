@@ -30,6 +30,4 @@ require (
 	gopkg.in/yaml.v2 v2.3.0 // indirect
 )
 
-replace (
-	github.com/Mrs4s/MiraiGo v0.0.0-20200812011522-ee1117893fad => ..\MiraiGo
-)
+replace github.com/Mrs4s/MiraiGo => ..\MiraiGo
